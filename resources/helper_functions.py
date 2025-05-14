@@ -179,7 +179,7 @@ if __name__ == "__main__":
     print("\n--- Testing extract_plate_site ---")
     test_filenames = [
         "Araceli_A6_s2_w1_z0_1020e47f-73ff-427f-b5aa-44d2915e9068.tiff",
-        "A21_s3.json",
+        "A6_s2.json",
         "invalid_file_name.tif"
     ]
     for fname in test_filenames:
