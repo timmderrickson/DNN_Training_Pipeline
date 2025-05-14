@@ -141,8 +141,8 @@ if __name__ == "__main__":
 
     image = hf.load_image(image)
 
-    # from main import preprocess_image_for_inference
-    # image = preprocess_image_for_inference(image)
+    from main import preprocess_image_for_inference
+    image = preprocess_image_for_inference(image)
     #
     # masks, flows = run_cellpose_inference(model, image, cellprob_threshold=0.5, diameter=10, channels=[0, 0], flow_threshold=0.5)
     # print('done')
