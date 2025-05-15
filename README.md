@@ -5,7 +5,7 @@ This project provides a modular and extensible framework for training, evaluatin
 ## 🚀 Features
 
 * **Batch inference** on large microscopy datasets with support for ground truth matching, scoring, and visualization.
-* **Flexible training pipeline** with automatic data preparation, augmentation, splitting, training, and metric logging.
+* **Flexible training pipeline** with automatic data preparation, augmentation, splitting, training, and metrics logging.
 * **Rich visualizations**: overlay outlines, masks, comparison plots, and per-class analysis.
 * **Metric logging** and batch-level comparison (IoU, Dice, etc.).
 * **Custom configuration** for classes, training augmentation, and model checkpointing.
@@ -17,14 +17,16 @@ This project provides a modular and extensible framework for training, evaluatin
 ```
 DNN_Training_Pipeline/
 ├── main.py                      # Entry point for training and batch run
-├── resources/
-│   ├── helper_functions.py      # Common utility functions
-│   ├── model_functions.py       # Cellpose model loading, inference
-│   ├── scoring_functions.py     # Metric calculation, CSV export
-│   ├── polygon_json_visualizations.py  # Visualization for masks and comparisons
-│   └── json_conversion_tools.py # Conversions to/from polygon JSONs
+├── resources/                   # Utilities and core logic
+│   ├── helper_functions.py      # File I/O, parsing, resolution helpers
+│   ├── model_functions.py       # Cellpose loading/inference
+│   ├── json_conversion_tools.py # JSON ↔ mask conversion
+│   ├── polygon_json_visualizations.py  # Overlay, outlines, GT comparison
+│   └── scoring_functions.py     # Metric calculations and batch-level exports
+│   └── README.md                # Docs for this folder
 ├── training/
-│   └── training_pipeline.py     # Functions to prepare, split, and train datasets
+│   ├── training_pipeline.py     # Data prep, augmentation, training logic
+│   └── README.md                # Docs for training module
 ├── models/                      # Saved models and checkpoints
 ├── data/                        # Input images and annotation JSONs
 ├── outputs/                     # Predictions, visualizations, and metrics
@@ -81,8 +83,6 @@ batch_train(
 ## 📚 How To Contribute
 
 * Add clear docstrings to all new functions.
-* Group utility functions in `helper_functions.py`.
+* Group utility functions in `resources/`.
 * Follow the naming patterns for ground truth: `Plate_Site.json` ⇄ `Araceli_Plate_Site_*.tiff`
 * Run and log training/inference through `main.py` whenever possible.
-
----
