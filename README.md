@@ -1,11 +1,12 @@
 # 🧠 Deep Learning Training Pipeline
 
-This project provides a modular and extensible framework for training, evaluating, and visualizing segmentation models for microscopy images using [Cellpose](https://github.com/MouseLand/cellpose) and related tools.
+This project provides a modular and extensible framework for training, evaluating, and visualizing segmentation models for microscopy images using [Cellpose](https://github.com/MouseLand/cellpose), ONNX-based ResUNet, and related tools.
 
 ## 🚀 Features
 
 * **Batch inference** on large microscopy datasets with support for ground truth matching, scoring, and visualization.
-* **Flexible training pipeline** with automatic data preparation, augmentation, splitting, training, and metrics logging.
+* **Tiled inference support** for both Cellpose and ONNX models to handle large images efficiently.
+* **Flexible training pipeline** with automatic data preparation, augmentation, splitting, training, and metric logging.
 * **Rich visualizations**: overlay outlines, masks, comparison plots, and per-class analysis.
 * **Metric logging** and batch-level comparison (IoU, Dice, etc.).
 * **Custom configuration** for classes, training augmentation, and model checkpointing.
@@ -18,8 +19,8 @@ This project provides a modular and extensible framework for training, evaluatin
 DNN_Training_Pipeline/
 ├── main.py                      # Entry point for training and batch run
 ├── resources/                   # Utilities and core logic
-│   ├── helper_functions.py      # File I/O, parsing, resolution helpers
-│   ├── model_functions.py       # Cellpose loading/inference
+│   ├── helper_functions.py      # File I/O, tiling, normalization, resolution helpers
+│   ├── model_functions.py       # Cellpose and ONNX model loading/inference
 │   ├── json_conversion_tools.py # JSON ↔ mask conversion
 │   ├── polygon_json_visualizations.py  # Overlay, outlines, GT comparison
 │   └── scoring_functions.py     # Metric calculations and batch-level exports
@@ -50,11 +51,19 @@ batch_run(
     image_inputs="data/images/",
     ground_truth_json_paths="data/annotations/",
     model_instance=model,
+    model_name="cellpose",
     diameter=30,
     compare=True,
     save_visuals=True,
-    visualizations=True
+    visualizations=True,
+    preprocess_image={"tile": True, "tile_size": (512, 512), "overlap": 32}
 )
+```
+
+You can also use tiling with **ResUNet** by setting `model_name="resunet"` and loading the ONNX model with:
+
+```python
+model = mf.instantiate_resunet_model("models/ResNet50_U-Net.onnx", gpu=True)
 ```
 
 ### 🎓 Training
