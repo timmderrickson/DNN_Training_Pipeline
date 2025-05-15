@@ -18,6 +18,51 @@ def load_image(image_path):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     return image
 
+def preprocess_image_for_inference(image, verbose=False):
+    """
+    Preprocesses an input image for inference:
+    - Normalizes based on dtype
+    - Converts to float32
+    - (Optionally extendable for cropping, filtering, etc.)
+
+    Parameters:
+    - image: np.ndarray, expected shape (H, W) or (H, W, C)
+    - verbose: bool, if True, print debug info
+
+    Returns:
+    - norm_image: np.ndarray of float32 scaled to [0, 1]
+    """
+
+    if verbose:
+        print(f"[PREPROCESS] Original dtype: {image.dtype}, shape: {image.shape}")
+
+    if image.dtype == np.uint8:
+        norm_image = image.astype(np.float32) / 255.0
+
+    elif image.dtype == np.uint16:
+        max_val = image.max()
+        if max_val <= 4095:
+            norm_image = image.astype(np.float32) / 4095.0  # 12-bit image
+            if verbose:
+                print("[PREPROCESS] Detected 12-bit image (max <= 4095)")
+        else:
+            norm_image = image.astype(np.float32) / 65535.0  # full 16-bit image
+            if verbose:
+                print("[PREPROCESS] Detected 16-bit image")
+
+    elif image.dtype in (np.float32, np.float64):
+        norm_image = np.clip(image, 0, 1).astype(np.float32)
+        if verbose:
+            print("[PREPROCESS] Image already in float format, clipped to [0, 1]")
+
+    else:
+        raise ValueError(f"[PREPROCESS] Unsupported image dtype: {image.dtype}")
+
+    if verbose:
+        print(f"[PREPROCESS] Final dtype: {norm_image.dtype}, min: {norm_image.min():.4f}, max: {norm_image.max():.4f}")
+
+    return norm_image
+
 def load_json(filepath):
     """Try loading a JSON file and return its data, or None if failed."""
     try:

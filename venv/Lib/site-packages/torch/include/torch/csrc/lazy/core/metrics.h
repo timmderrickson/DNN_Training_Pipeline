@@ -15,7 +15,8 @@
 
 #include <c10/macros/Export.h>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 
 struct TORCH_API Sample {
   Sample() = default;
@@ -258,13 +259,9 @@ class TORCH_API TimedSection {
  public:
   explicit TimedSection(Metric* metric) : metric_(metric), start_(NowNs()) {}
 
-  TimedSection(TimedSection&& other) = delete;
-  TimedSection(const TimedSection&) = delete;
-  TimedSection& operator=(const TimedSection&) = delete;
-  TimedSection& operator=(TimedSection&&) = delete;
   ~TimedSection() {
     int64_t now = NowNs();
-    metric_->AddSample(now, static_cast<double>(now - start_));
+    metric_->AddSample(now, now - start_);
   }
 
   double Elapsed() const {
@@ -285,4 +282,5 @@ class TORCH_API TimedSection {
   TORCH_LAZY_FN_COUNTER(ns);                    \
   TORCH_LAZY_TIMED("LazyTracing")
 
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

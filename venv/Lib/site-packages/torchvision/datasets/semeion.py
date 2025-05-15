@@ -85,6 +85,7 @@ class SEMEION(VisionDataset):
 
     def download(self) -> None:
         if self._check_integrity():
+            print("Files already downloaded and verified")
             return
 
         root = self.root

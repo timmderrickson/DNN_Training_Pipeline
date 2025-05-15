@@ -1,4 +1,5 @@
 import os
+import csv
 import json
 import numpy as np
 from tqdm import tqdm
@@ -11,54 +12,9 @@ import resources.json_conversion_tools as jc
 import resources.polygon_json_visualizations as viz
 
 
-def preprocess_image_for_inference(image, verbose=False):
-    """
-    Preprocesses an input image for inference:
-    - Normalizes based on dtype
-    - Converts to float32
-    - (Optionally extendable for cropping, filtering, etc.)
-
-    Parameters:
-    - image: np.ndarray, expected shape (H, W) or (H, W, C)
-    - verbose: bool, if True, print debug info
-
-    Returns:
-    - norm_image: np.ndarray of float32 scaled to [0, 1]
-    """
-
-    if verbose:
-        print(f"[PREPROCESS] Original dtype: {image.dtype}, shape: {image.shape}")
-
-    if image.dtype == np.uint8:
-        norm_image = image.astype(np.float32) / 255.0
-
-    elif image.dtype == np.uint16:
-        max_val = image.max()
-        if max_val <= 4095:
-            norm_image = image.astype(np.float32) / 4095.0  # 12-bit image
-            if verbose:
-                print("[PREPROCESS] Detected 12-bit image (max <= 4095)")
-        else:
-            norm_image = image.astype(np.float32) / 65535.0  # full 16-bit image
-            if verbose:
-                print("[PREPROCESS] Detected 16-bit image")
-
-    elif image.dtype in (np.float32, np.float64):
-        norm_image = np.clip(image, 0, 1).astype(np.float32)
-        if verbose:
-            print("[PREPROCESS] Image already in float format, clipped to [0, 1]")
-
-    else:
-        raise ValueError(f"[PREPROCESS] Unsupported image dtype: {image.dtype}")
-
-    if verbose:
-        print(f"[PREPROCESS] Final dtype: {norm_image.dtype}, min: {norm_image.min():.4f}, max: {norm_image.max():.4f}")
-
-    return norm_image
-
-def run_inference(image_path, model_instance, model_name='cellpose', diameter=None, channels=[0, 0],
-                  output_mask_path='output_mask.json', return_result=False, flow_threshold=None,
-                  cellprob_threshold=None, preprocess_image=True):
+def run_inference(image_path, model_instance, model_name='cellpose', diameter=None, output_mask_path='output_mask.json',
+                  return_result=False, flow_threshold=None, cellprob_threshold=None, preprocess_image=True,
+                  visualization=False):
     """
     Runs inference using a specified model on a single image and saves the output mask as JSON.
 
@@ -73,6 +29,7 @@ def run_inference(image_path, model_instance, model_name='cellpose', diameter=No
     - return_result: if True, also returns the result object.
     - flow_threshold: optional float, Cellpose flow filtering.
     - cellprob_threshold: optional float, Cellpose confidence threshold.
+    -visualization: optional bool, whether to visualize the resulting image.
 
     Returns:
     - output_mask_path or (output_mask_path, result) if return_result=True
@@ -81,7 +38,7 @@ def run_inference(image_path, model_instance, model_name='cellpose', diameter=No
     basename = os.path.basename(image_path)
 
     print(f"[INFO] Starting inference for: {basename}")
-    print(f"       → Diameter: {diameter}, Channels: {channels}")
+    print(f"       → Diameter: {diameter}")
     if flow_threshold is not None:
         print(f"       → Flow threshold: {flow_threshold}")
     if cellprob_threshold is not None:
@@ -90,7 +47,7 @@ def run_inference(image_path, model_instance, model_name='cellpose', diameter=No
     original_image = hf.load_image(image_path)
 
     if preprocess_image:
-        inference_image = preprocess_image_for_inference(original_image, verbose=True)
+        inference_image = hf.preprocess_image_for_inference(original_image, verbose=True)
     else:
         inference_image = original_image
 
@@ -100,7 +57,6 @@ def run_inference(image_path, model_instance, model_name='cellpose', diameter=No
             model=model_instance,
             image=inference_image,
             diameter=diameter,
-            channels=channels,
             flow_threshold=flow_threshold,
             cellprob_threshold=cellprob_threshold
         )
@@ -116,50 +72,90 @@ def run_inference(image_path, model_instance, model_name='cellpose', diameter=No
 
     print(f"[INFO] Saved mask to: {output_mask_path}")
 
+    if visualization:
+        viz.visualize_masks(
+            image_path=image_path,
+            pred_json=result,
+            model=model_name
+        )
+
     return (output_mask_path, result) if return_result else output_mask_path
 
-def batch_inference(image_paths, model_name, model_type, diameter, channels,
-                    output_dir, batch_size=None, gpu=True, model_instance=None):
+def batch_inference(image_inputs, model_name='cellpose', diameter=None, channels=[0, 0], output_dir='outputs',
+                    batch_size=None, gpu=True, model_instance=None, flow_threshold=None, cellprob_threshold=None,
+                    preprocess_image=True, visualization=False, verbose=True):
     """
-    Runs inference on images in batches of specified size, with progress bar.
+    Runs inference on a list or directory of TIFF images in batches.
+
+    Parameters:
+    - image_inputs: directory path or list of .tif/.tiff image paths.
+    - model_name: backend model name (default 'cellpose').
+    - diameter: estimated object diameter for Cellpose.
+    - channels: Cellpose channel config (currently unused).
+    - output_dir: where to save JSON predictions.
+    - batch_size: how many images to process at a time.
+    - gpu: use GPU if available.
+    - model_instance: a pre-loaded Cellpose model (optional).
+    - flow_threshold: Cellpose flow filtering threshold.
+    - cellprob_threshold: Cellpose segmentation threshold.
+    - preprocess_image: normalize image before inference.
+    - visualization: visualize the prediction output.
+    - verbose: print per-image debug info.
+
+    Returns:
+    - List of output JSON paths.
     """
+
+    image_paths = hf.resolve_files(image_inputs, valid_exts={'.tif', '.tiff'})
+
+    if not image_paths:
+        raise RuntimeError("No valid TIFF images found.")
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
     pred_json_paths = []
 
     if model_instance is None:
         if model_name == 'cellpose':
-            model_instance = mf.instantiate_cellpose_model(model_type=model_type, gpu=gpu)
+            model_instance = mf.instantiate_cellpose_model(net="CPnetV2", gpu=gpu)
         else:
-            raise ValueError(f"Model '{model_name}' not implemented in batch_inference yet.")
+            raise ValueError(f"[ERROR] Model '{model_name}' is not implemented.")
 
     def process_batch(batch_paths):
         batch_pred_paths = []
         for img_path in tqdm(batch_paths, desc="Processing batch", unit="image"):
             img_basename = Path(img_path).stem
             output_json = output_dir / f"{img_basename}_{model_name}.json"
+
+            if verbose:
+                print(f"\n[INFO] Processing: {img_basename}")
+
             pred_json = run_inference(
                 image_path=img_path,
                 model_instance=model_instance,
                 model_name=model_name,
-                model_type=model_type,
                 diameter=diameter,
-                channels=channels,
-                output_mask_path=output_json
+                output_mask_path=output_json,
+                flow_threshold=flow_threshold,
+                cellprob_threshold=cellprob_threshold,
+                preprocess_image=preprocess_image,
+                visualization=visualization
             )
-            batch_pred_paths.append(output_json)
+            batch_pred_paths.append(pred_json)
         return batch_pred_paths
 
-    if batch_size is None or batch_size >= len(image_paths):
+    if not batch_size or batch_size >= len(image_paths):
         pred_json_paths.extend(process_batch(image_paths))
     else:
-        for batch_idx in range((len(image_paths) + batch_size - 1) // batch_size):
-            print(f"=== Batch {batch_idx + 1} ===")
+        total_batches = (len(image_paths) + batch_size - 1) // batch_size
+        for batch_idx in range(total_batches):
+            print(f"\n=== Batch {batch_idx + 1}/{total_batches} ===")
             batch = image_paths[batch_idx * batch_size: (batch_idx + 1) * batch_size]
             pred_json_paths.extend(process_batch(batch))
 
+    print(f"\n✅ Batch inference complete. Saved {len(pred_json_paths)} prediction files.")
     return pred_json_paths
+
 
 def batch_train(gt_json_folder, image_folder, output_image_folder, output_mask_folder, image_shape, augmentation_config,
                 num_augments, split_dir, net='CPnetV2', save_path='training/trained_cellpose_model', n_epochs=500,
@@ -168,10 +164,9 @@ def batch_train(gt_json_folder, image_folder, output_image_folder, output_mask_f
     Runs full batch training pipeline: data prep → augment → split → train → save metrics.
     """
 
-    print("\n========== BATCH TRAINING START ==========\n")
+    print("\n========== BATCH TRAINING START ==========")
 
     print("Step 1: Preparing training data...")
-
     tp.prepare_training_data(
         gt_json_folder      = gt_json_folder,
         image_folder        = image_folder,
@@ -182,7 +177,6 @@ def batch_train(gt_json_folder, image_folder, output_image_folder, output_mask_f
     )
 
     print("\nStep 2: Applying data augmentation...")
-
     augmented_data = tp.prepare_augmented_training_data(
         image_folder        = output_image_folder,
         mask_folder         = output_mask_folder,
@@ -192,7 +186,6 @@ def batch_train(gt_json_folder, image_folder, output_image_folder, output_mask_f
     )
 
     print("\nStep 3: Splitting data...")
-
     tp.split_augmented_data(
         augmented_data = augmented_data,
         train_ratio    = 0.8,
@@ -203,7 +196,6 @@ def batch_train(gt_json_folder, image_folder, output_image_folder, output_mask_f
     )
 
     print("\nStep 4: Running training...")
-
     tp.run_training_from_split(
         split_dir       = split_dir,
         net             = net,
@@ -217,9 +209,16 @@ def batch_train(gt_json_folder, image_folder, output_image_folder, output_mask_f
     )
 
     print("\nStep 5: Saving metrics and training summary...")
-
     metrics_path = os.path.join(save_path, "metrics.npy")
-    metrics = np.load(metrics_path, allow_pickle=True).item()
+    if not os.path.exists(metrics_path):
+        print(f"[ERROR] Metrics file not found at {metrics_path}. Training may have failed or been interrupted.")
+        return
+
+    try:
+        metrics = np.load(metrics_path, allow_pickle=True).item()
+    except Exception as e:
+        print(f"[ERROR] Failed to load metrics: {e}")
+        return
 
     tp.save_metrics_as_csv(
         metrics_path    = metrics_path,
@@ -231,7 +230,7 @@ def batch_train(gt_json_folder, image_folder, output_image_folder, output_mask_f
         learning_rate    = learning_rate,
         weight_decay     = weight_decay,
         batch_size       = batch_size,
-        train_loss       = metrics['train_loss'],
+        train_loss       = metrics.get('train_loss', []),
         val_loss         = metrics.get('val_loss'),
         save_path        = save_path,
         additional_notes = "Batch training run.",
@@ -245,114 +244,147 @@ def batch_train(gt_json_folder, image_folder, output_image_folder, output_mask_f
 
     print("\n✅ Batch training complete!\n")
 
-def batch_run(image_paths, ground_truth_json_paths=None, prediction_json_paths=None, model_name='cellpose',
-              model_type='cyto', diameter=None, channels=[0, 0], output_dir='data/predictions', batch_size=None,
-              save_visuals=False, pred_class=None, gt_class=None, compare=False, overwrite_inference=False, gpu=True,
-              visualizations=True):
+def batch_run(image_inputs, ground_truth_json_paths=None, prediction_json_paths=None,
+              model_instance=None, model_name='cellpose', diameter=None, output_dir='data/predictions',
+              batch_size=None, save_visuals=False, pred_class=None, gt_class=None, compare=False,
+              overwrite_inference=False, gpu=True, visualizations=True,
+              flow_threshold=None, cellprob_threshold=None, preprocess_image=True, verbose=True,
+              headless=False, summary_csv_path="batch_results/batch_run_summary.csv"):
     """
-    Runs batch inference and scoring if compare=True, otherwise just visualizes predictions.
+    Full batch pipeline: resolves images, runs inference, matches GT if available,
+    and performs scoring + visualization (comparison or standalone).
+
+    Accepts either a folder or list for both images and GT JSONs.
     """
+
     print("\n========== BATCH RUN SETTINGS ==========")
     print(f"Model: {model_name}")
-    print(f"Model type: {model_type}")
     print(f"Diameter: {diameter}")
-    print(f"Channels: {channels}")
     print(f"Compare: {compare}")
     print(f"Prediction classes: {pred_class or 'ALL'}")
     print(f"Ground truth classes: {gt_class or 'ALL'}")
     print(f"Save visuals: {save_visuals}")
     print(f"Overwrite inference: {overwrite_inference}")
     print(f"Visualizations enabled: {visualizations}")
-    print("=======================================\n")
+    print(f"Headless mode: {headless}")
+    print("=========================================\n")
 
-    batch_scores_csv = "batch_results/batch_scores.csv"
+    image_paths = hf.resolve_files(image_inputs, valid_exts={'.tif', '.tiff'})
+    if not image_paths:
+        raise RuntimeError("No valid image files found.")
 
+    gt_lookup = {}
     if compare:
-        if ground_truth_json_paths is None:
-            raise ValueError("ground_truth_json_paths must be provided when compare=True.")
-        if len(ground_truth_json_paths) != len(image_paths):
-            raise ValueError("Number of ground truth JSONs must match number of images.")
+        if isinstance(ground_truth_json_paths, str) and os.path.isdir(ground_truth_json_paths):
+            gt_files = hf.resolve_files(ground_truth_json_paths, valid_exts={'.json'})
+        elif isinstance(ground_truth_json_paths, list):
+            gt_files = ground_truth_json_paths
+        else:
+            raise ValueError("ground_truth_json_paths must be a directory or list of .json paths when compare=True")
 
-    # 1️⃣ Instantiate the model once
-    if model_name == "cellpose":
-        model_instance = mf.instantiate_cellpose_model(model_type=model_type, gpu=gpu)
-    else:
-        raise ValueError(f"Model '{model_name}' is not implemented in batch_run yet.")
+        for f in gt_files:
+            key = hf.extract_well_site(Path(f).stem)
+            if key:
+                gt_lookup[key.lower()] = f
 
-    # 2️⃣ Decide if inference is needed
+    if model_instance is None:
+        raise ValueError("You must provide a pre-instantiated model_instance (e.g. from instantiate_cellpose_model()).")
+
     run_inference_flag = False
-
     if overwrite_inference:
-        print("overwrite_inference=True → running inference regardless of provided predictions.")
+        print("[INFO] overwrite_inference=True → forcing inference.")
         run_inference_flag = True
     elif prediction_json_paths is None:
-        print("No prediction JSONs provided. Inference will be run.")
+        print("[INFO] No prediction JSONs provided → running inference.")
         run_inference_flag = True
     elif len(prediction_json_paths) != len(image_paths):
         raise ValueError("Number of prediction JSONs must match number of images.")
     else:
-        print("Using provided prediction JSONs.")
+        print("[INFO] Using provided prediction JSONs.")
 
-    # 3️⃣ Run inference if needed
     if run_inference_flag:
         prediction_json_paths = batch_inference(
-            image_paths=image_paths,
+            image_inputs=image_paths,
             model_name=model_name,
-            model_type=model_type,
             diameter=diameter,
-            channels=channels,
             output_dir=output_dir,
             batch_size=batch_size,
             gpu=gpu,
-            model_instance=model_instance
+            model_instance=model_instance,
+            flow_threshold=flow_threshold,
+            cellprob_threshold=cellprob_threshold,
+            preprocess_image=preprocess_image,
+            visualization=visualizations and not headless,
+            verbose=verbose
         )
 
-    # 4️⃣ Load predictions & GT
     image_json_pairs = []
-    for idx, (img_path, pred_path) in enumerate(zip(image_paths, prediction_json_paths)):
+    summary_rows = []
+    for img_path, pred_path in zip(image_paths, prediction_json_paths):
         pred_json = hf.load_json(pred_path)
-        gt_json = hf.load_json(ground_truth_json_paths[idx]) if ground_truth_json_paths else None
+        gt_json = None
+
+        if compare:
+            key = hf.extract_well_site(Path(img_path).stem)
+            if key:
+                gt_path = gt_lookup.get(key.lower())
+                if gt_path and os.path.exists(gt_path):
+                    try:
+                        gt_json = hf.load_json(gt_path)
+                    except Exception as e:
+                        print(f"[WARN] Failed to load GT for {Path(img_path).name}: {e}")
+                        gt_json = None
+                elif verbose:
+                    print(f"[WARN] No ground truth JSON found for {Path(img_path).name} → skipping comparison.")
+
         image_json_pairs.append((img_path, pred_json, gt_json))
+        summary_rows.append({
+            "image": Path(img_path).name,
+            "has_gt": gt_json is not None,
+            "used_for_comparison": compare and gt_json is not None,
+            "visualized": False  # will update later
+        })
 
-    # 5️⃣ If comparing → batch scoring and comparison visualization
-    if compare and visualizations:
-        if save_visuals:
-            pred_label = f"pred{'-'.join(pred_class)}" if pred_class else "predALL"
-            gt_label = f"gt{'-'.join(gt_class)}" if gt_class else "gtALL"
-            results_dir = f"batch_results_{pred_label}_{gt_label}"
-        else:
-            results_dir = None
+    comparison_pairs = [(img, pred, gt) for img, pred, gt in image_json_pairs if gt is not None]
 
-        print("Running batch visualization and scoring...")
-        if results_dir is None:
-            print("No output directory provided — batch visuals will not be saved.")
-        else:
-            batch_results = viz.batch_visualize_and_score(
-                image_json_pairs=image_json_pairs,
-                pred_class=pred_class,
-                gt_class=gt_class,
-                output_dir=results_dir
-            )
-            score.save_batch_metrics_to_csv(batch_results, output_csv=batch_scores_csv)
+    if compare and comparison_pairs:
+        pred_label = f"pred{'-'.join(pred_class)}" if pred_class else "predALL"
+        gt_label = f"gt{'-'.join(gt_class)}" if gt_class else "gtALL"
+        results_dir = f"batch_results_{pred_label}_{gt_label}" if save_visuals else "batch_results_temp"
 
-    # 6️⃣ Per-image visualizations
-    if visualizations:
-        print("Running individual visualizations...")
-        for img_path, pred_json, gt_json in tqdm(image_json_pairs, desc="Visualizing images", unit="image"):
-            if compare:
-                viz.visualize_comparison_outlines(
-                    image_path=img_path,
-                    pred_json=pred_json,
-                    gt_json=gt_json,
-                    gt_class=gt_class or ['0']
-                )
-            else:
+        print("[INFO] Running comparison visualization and scoring...")
+        batch_results = viz.batch_visualize_and_score(
+            image_json_pairs=comparison_pairs,
+            pred_class=pred_class,
+            gt_class=gt_class,
+            output_dir=results_dir,
+            save_visualizations=save_visuals and not headless
+        )
+        score.save_batch_metrics_to_csv(batch_results, output_csv="batch_results/batch_scores.csv")
+        for i, (img, pred, gt) in enumerate(image_json_pairs):
+            if gt is not None:
+                summary_rows[i]["visualized"] = save_visuals and not headless
+    elif compare:
+        print("[WARN] No ground truth available — skipping comparison scoring.")
+
+    if visualizations and not headless:
+        print("[INFO] Visualizing non-comparison images...")
+        for i, (img_path, pred_json, gt_json) in enumerate(image_json_pairs):
+            if gt_json is None:
                 viz.visualize_masks(
                     image_path=img_path,
-                    json_data=pred_json,
+                    pred_json=pred_json,
                     classes_to_include=pred_class or ['0'],
                     model=model_name
                 )
+                summary_rows[i]["visualized"] = True
+
+    Path(summary_csv_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(summary_csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["image", "has_gt", "used_for_comparison", "visualized"])
+        writer.writeheader()
+        writer.writerows(summary_rows)
+    print(f"\n📄 Summary written to {summary_csv_path}")
 
 def batch_train_main(arguments):
     """
@@ -380,6 +412,7 @@ def batch_run_main(arguments):
 if __name__ == "__main__":
 
     image_paths = [
+        "data/images/Araceli_A1_s1_w1_z0_baf8acb0-02f2-4d95-b194-6eca230e9937.tiff",
         "data/images/Araceli_A6_s2_w1_z0_1020e47f-73ff-427f-b5aa-44d2915e9068.tiff",
         "data/images/Araceli_A7_s4_w1_z0_af3998a3-849c-47fe-9274-382f3879f87c.tiff"
     ]
@@ -409,30 +442,39 @@ if __name__ == "__main__":
         "num_augments": 5,
         "split_dir": "training/training_data/augmented_data_split",
         "net": "CPnetV2",
-        "save_path": "training/training/trained_cellpose_model",
+        "save_path": "models/trained_models",
         "n_epochs": 1,
         "learning_rate": 0.2,
         "weight_decay": 1e-5,
         "batch_size": 8,
-        "gpu": False,
+        "gpu": True,
         "verbose": True
     }
 
-    model = mf.instantiate_cellpose_model(net="CPnet", gpu=True)
-
-    out_path = run_inference(
-        image_path=image_paths[0],
-        model_instance=model,
-        model_name='cellpose',
-        diameter=30,
-        channels=[0, 0],
-        flow_threshold=0.4,
-        cellprob_threshold=0.0
-    )
+    batch_run_arguments = {
+    "image_inputs": "data/images/",  # directory of .tif images
+    "ground_truth_json_paths": "data/annotations/",  # directory of .json files
+    "model_instance": mf.instantiate_cellpose_model(net="CPnet", gpu=True),
+    "model_name": "cellpose",
+    "diameter": 30,
+    "output_dir": "data/predictions/",
+    "batch_size": 2,
+    "save_visuals": True,
+    "pred_class": ['0', '1'],
+    "gt_class": ['0', '1'],
+    "compare": True,
+    "overwrite_inference": True,
+    "gpu": True,
+    "visualizations": True,
+    "flow_threshold": 0.4,
+    "cellprob_threshold": 0.0,
+    "preprocess_image": True,
+    "verbose": True,
+    "headless": False
+}
 
     print("\n===== Running Batch Inference =====\n")
-    # batch_run_main(inference_arguments)
+    # batch_run_main(batch_run_arguments)
 
-    # print("\n===== Running Batch Training =====\n")
-    # batch_train_main(batch_train_arguments)
-
+    print("\n===== Running Batch Training =====\n")
+    batch_train_main(batch_train_arguments)

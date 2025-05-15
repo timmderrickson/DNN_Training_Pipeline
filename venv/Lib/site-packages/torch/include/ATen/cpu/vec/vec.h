@@ -3,7 +3,6 @@
 #if defined(CPU_CAPABILITY_AVX512)
 #include <ATen/cpu/vec/vec512/vec512.h>
 #else
-#include <ATen/cpu/vec/vec128/vec128.h>
 #include <ATen/cpu/vec/vec256/vec256.h>
 #endif
 
@@ -16,7 +15,7 @@ inline Vectorized<bool> convert_to_bool(Vectorized<int8_t> x) {
   x.ne(Vectorized<int8_t>(0)).store(buffer);
 
   Vectorized<bool> ret;
-  static_assert(x.size() == ret.size());
+  static_assert(x.size() == ret.size(), "");
   std::memcpy(ret, buffer, ret.size() * sizeof(bool));
   return ret;
 }

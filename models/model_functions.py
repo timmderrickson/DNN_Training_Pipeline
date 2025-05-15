@@ -1,8 +1,6 @@
 import os
 from cellpose import models
 from cellpose.train import train_seg
-from torch.ao.quantization import prepare_for_propagation_comparison
-
 from resources import helper_functions as hf
 
 
@@ -32,7 +30,7 @@ def instantiate_cellpose_model(net="CPnetV2", gpu=True, model_path=None):
 
     return model
 
-def run_cellpose_inference(model, image, diameter=None, channels=[0, 0], flow_threshold=None, cellprob_threshold=None):
+def run_cellpose_inference(model, image, diameter=None, flow_threshold=None, cellprob_threshold=None):
     """
     Runs Cellpose inference on a single image.
 
@@ -51,11 +49,18 @@ def run_cellpose_inference(model, image, diameter=None, channels=[0, 0], flow_th
     results = model.eval(
         [image],
         diameter=diameter,
-        channels=channels,
         flow_threshold=flow_threshold,
         cellprob_threshold=cellprob_threshold
     )
-    masks, flows, styles, diams = results
+    # Handle flexible unpacking
+    if len(results) == 4:
+        masks, flows, styles, diams = results
+    elif len(results) == 3:
+        masks, flows, diams = results
+        styles = None
+    else:
+        raise ValueError(f"Unexpected number of return values from model.eval(): {len(results)}")
+
     return masks[0], flows[0]
 
 def train_cellpose_model(train_images_dir, val_images_dir=None, save_path='trained_cellpose_model', n_epochs=500,
@@ -137,12 +142,11 @@ if __name__ == "__main__":
     # )
     image = "../data/images/Araceli_A6_s2_w1_z0_1020e47f-73ff-427f-b5aa-44d2915e9068.tiff"
 
-    model = instantiate_cellpose_model(net="CPnetV2", model_path=None)
+    model = instantiate_cellpose_model(net="CPnetV2", model_path=None, gpu=True)
 
     image = hf.load_image(image)
 
-    from main import preprocess_image_for_inference
-    image = preprocess_image_for_inference(image)
-    #
-    # masks, flows = run_cellpose_inference(model, image, cellprob_threshold=0.5, diameter=10, channels=[0, 0], flow_threshold=0.5)
-    # print('done')
+    image = hf.preprocess_image_for_inference(image)
+
+    masks, flows = run_cellpose_inference(model, image, cellprob_threshold=0.5, diameter=10, flow_threshold=0.5)
+    print('done')

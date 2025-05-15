@@ -327,27 +327,23 @@ def batch_visualize_masks(image_inputs, json_inputs, classes_to_include=None, mo
             model=model
         )
 
-def batch_visualize_and_score(image_json_pairs, pred_class=None,
-                              gt_class=None, output_dir="batch_results",
+def batch_visualize_and_score(image_json_pairs, pred_class=None, gt_class=None, output_dir="batch_results",
                               save_visualizations=False):
     """
-    Run visualize_comparison_outlines in batch mode.
+    Run visualize_comparison_outlines in batch mode. Automatically skips
+    any entries where ground truth is missing (None).
 
     Args:
-        image_json_pairs (list): List of tuples:
-            (image_path, pred_json, gt_json)
-        pred_class (list or None): List of class keys to include from prediction JSON,
-            or None to include all.
-        gt_class (list or None): List of class keys to include from ground truth JSON,
-            or None to include all.
-        output_dir (str): Directory to save visualizations and results.
-        save_visualizations (bool): Whether to save comparison visualizations.
+        image_json_pairs (list): List of tuples: (image_path, pred_json, gt_json)
+        pred_class (list or None): List of prediction classes to include.
+        gt_class (list or None): List of ground truth classes to include.
+        output_dir (str): Where to save visualizations and results.
+        save_visualizations (bool): Whether to save .png comparisons.
 
     Returns:
         dict: Batch results mapping image names to IoU/Dice scores.
     """
     os.makedirs(output_dir, exist_ok=True)
-
     batch_results = {}
 
     for idx, (image_path, pred_json, gt_json) in enumerate(image_json_pairs):
@@ -355,24 +351,33 @@ def batch_visualize_and_score(image_json_pairs, pred_class=None,
 
         print(f"\n🔍 Processing {image_name} ({idx + 1}/{len(image_json_pairs)})")
 
-        # ---- Run visualization and get scores ----
-        scores = visualize_comparison_outlines(
-            image_path=image_path,
-            pred_json=pred_json,
-            gt_json=gt_json,
-            pred_class=pred_class,
-            gt_class=gt_class
-        )
+        if gt_json is None:
+            print(f"[WARN] Skipping {image_name} — ground truth is None")
+            continue
 
-        # ---- Store results ----
-        batch_results[image_name] = scores
+        try:
+            # ---- Run visualization and get scores ----
+            scores = visualize_comparison_outlines(
+                image_path=image_path,
+                pred_json=pred_json,
+                gt_json=gt_json,
+                pred_class=pred_class,
+                gt_class=gt_class
+            )
 
-        # ---- Optionally save the figure ----
-        if save_visualizations:
-            fig_path = os.path.join(output_dir, f"{image_name}_comparison.png")
-            plt.savefig(fig_path, bbox_inches='tight')
-            print(f"✅ Saved visualization for {image_name}")
-            plt.close()  # Prevent memory buildup
+            # ---- Store results ----
+            batch_results[image_name] = scores
+
+            # ---- Optionally save the figure ----
+            if save_visualizations:
+                fig_path = os.path.join(output_dir, f"{image_name}_comparison.png")
+                plt.savefig(fig_path, bbox_inches='tight')
+                print(f"✅ Saved visualization for {image_name}")
+                plt.close()  # Prevent memory buildup
+
+        except Exception as e:
+            print(f"[ERROR] Failed to process {image_name}: {e}")
+            continue
 
     # ---- Save all scores to JSON ----
     score_file = os.path.join(output_dir, "batch_scores.json")
@@ -381,6 +386,7 @@ def batch_visualize_and_score(image_json_pairs, pred_class=None,
     print(f"\n✅ All scores saved to {score_file}")
 
     return batch_results
+
 
 
 if __name__ == "__main__":

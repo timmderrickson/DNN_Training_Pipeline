@@ -56,7 +56,7 @@ def save_batch_metrics_to_csv(batch_results, output_csv="batch_scores.csv"):
         print("❌ No batch results to save.")
         return
 
-    # Get metric names from first item
+    # Get metric names from the first entry
     sample_scores = next(iter(batch_results.values()))
     metric_names = list(sample_scores.keys())
 
@@ -80,11 +80,14 @@ def save_batch_metrics_to_csv(batch_results, output_csv="batch_scores.csv"):
     # ---- Aggregate stats ----
     print("\n📊 Aggregate Metrics:")
     for metric in metric_names:
-        values = [r[metric] for r in rows if r[metric] is not None]
+        values = [
+            r[metric] for r in rows
+            if isinstance(r[metric], (int, float))
+        ]
         if values:
             print(f"  {metric} — Mean: {np.mean(values):.4f} | Median: {np.median(values):.4f}")
         else:
-            print(f"  {metric} — No valid scores.")
+            print(f"  {metric} — No valid numeric scores.")
 
 def log_failure_cases(batch_results, output_path="batch_results/failure_cases.csv",
                       metric="Dice", threshold=0.5, max_report=10):
