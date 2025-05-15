@@ -1,4 +1,6 @@
 import os
+import numpy as np
+import onnxruntime as ort
 from cellpose import models
 from cellpose.train import train_seg
 from resources import helper_functions as hf
@@ -112,6 +114,88 @@ def train_cellpose_model(train_images_dir, val_images_dir=None, save_path='train
         batch_size=batch_size
     )
 
+def instantiate_resunet_model(model_path, gpu=True):
+    """
+    Loads the ResNet50-U-Net ONNX model using ONNX Runtime.
+
+    Args:
+        model_path (str): Path to the .onnx model file.
+        gpu (bool): If True, attempts to use CUDA; else uses CPU.
+
+    Returns:
+        ort.InferenceSession: ONNX model session.
+    """
+    providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if gpu else ['CPUExecutionProvider']
+    session = ort.InferenceSession(model_path, providers=providers)
+    print(f"[INFO] Loaded ResNet50-U-Net ONNX model from {model_path}")
+    return session
+
+def run_resunet_inference(model_session, image, input_key='input', output_key='conv2d_8'):
+    """
+    Runs inference using the ResNet50-U-Net ONNX model on a preprocessed image.
+
+    Args:
+        model_session (onnxruntime.InferenceSession): The loaded ONNX model.
+        image (np.ndarray): Preprocessed image (H, W) or (H, W, C), float32 [0, 1].
+        input_key (str): Input tensor name.
+        output_key (str): Output tensor name.
+
+    Returns:
+        np.ndarray: Segmentation mask (H, W), binarized.
+    """
+    import cv2
+
+    # Ensure image is 3-channel RGB (H, W, 3)
+    if image.ndim == 2:
+        image = np.stack([image] * 3, axis=-1)
+    elif image.shape[-1] == 1:
+        image = np.repeat(image, 3, axis=-1)
+
+    # Resize to model input shape
+    image_resized = cv2.resize(image, (512, 512), interpolation=cv2.INTER_AREA)
+    input_tensor = np.expand_dims(image_resized, axis=0)  # (1, 512, 512, 3)
+
+    # Run inference
+    outputs = model_session.run([output_key], {input_key: input_tensor})[0]
+    mask = outputs.squeeze()  # (512, 512)
+
+    # Resize back to original image size
+    mask_resized = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+    return (mask_resized > 0.5).astype(np.uint8)
+
+def run_tiled_inference(model_name, model_instance, image, tile_size=(512, 512), overlap=0, normalize=True, **kwargs):
+    """
+    Runs tiled inference on a large image using the specified model.
+
+    Args:
+        model_name (str): Either 'cellpose' or 'resunet'.
+        model_instance: Pre-instantiated model object.
+        image (np.ndarray): Full-sized image.
+        tile_size (tuple): Size of each tile (H, W).
+        overlap (int): Number of pixels to overlap between tiles.
+        **kwargs: Additional model-specific inference args (e.g., diameter).
+
+    Returns:
+        np.ndarray: Reconstructed full-size mask.
+    """
+    tiles, coords, padded_shape = hf.tile_image(image, tile_size=tile_size, overlap=overlap)
+    if normalize:
+        tiles = [hf.normalize_image(tile) for tile in tiles]
+
+    tile_preds = []
+    for tile in tiles:
+        if model_name.lower() == 'cellpose':
+            mask, _ = run_cellpose_inference(model_instance, tile, **kwargs)
+        elif model_name.lower() == 'resunet':
+            mask = run_resunet_inference(model_instance, tile)
+        else:
+            raise ValueError(f"Unsupported model type: {model_name}")
+        tile_preds.append(mask)
+
+    full_mask = hf.stitch_tiles(tile_preds, coords, padded_shape, tile_size=tile_size)
+    return full_mask[:image.shape[0], :image.shape[1]]
+
 # ============================== MAIN ==============================
 
 if __name__ == "__main__":
@@ -142,11 +226,14 @@ if __name__ == "__main__":
     # )
     image = "../data/images/Araceli_A6_s2_w1_z0_1020e47f-73ff-427f-b5aa-44d2915e9068.tiff"
 
-    model = instantiate_cellpose_model(net="CPnetV2", model_path=None, gpu=True)
-
+    # model = instantiate_cellpose_model(net="CPnetV2", model_path=None, gpu=True)
+    #
     image = hf.load_image(image)
 
     image = hf.preprocess_image_for_inference(image)
 
-    masks, flows = run_cellpose_inference(model, image, cellprob_threshold=0.5, diameter=10, flow_threshold=0.5)
+    # masks, flows = run_cellpose_inference(model, image, cellprob_threshold=0.5, diameter=10, flow_threshold=0.5)
+    resnet = instantiate_resunet_model("ResNet50_U-Net.onnx", gpu=True)
+
+    mask = run_resunet_inference(resnet, image)
     print('done')

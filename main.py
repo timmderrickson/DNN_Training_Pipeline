@@ -1,6 +1,7 @@
 import os
 import csv
 import json
+import time
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
@@ -11,34 +12,35 @@ import resources.scoring_functions as score
 import resources.json_conversion_tools as jc
 import resources.polygon_json_visualizations as viz
 
-
 def run_inference(image_path, model_instance, model_name='cellpose', diameter=None, output_mask_path='output_mask.json',
-                  return_result=False, flow_threshold=None, cellprob_threshold=None, preprocess_image=True,
-                  visualization=False):
+                  return_result=False, flow_threshold=None, cellprob_threshold=None, tile_images=True,
+                  tile_size=(512, 512), normalize_images=True, visualization=False):
     """
     Runs inference using a specified model on a single image and saves the output mask as JSON.
 
     Parameters:
     - image_path: path to the input image file.
-    - model_instance: CellposeModel (or compatible model).
-    - model_name: string identifier (currently supports 'cellpose').
-    - model_type: 'cyto' or 'cyto2' (informational only).
-    - diameter: estimated object diameter.
-    - channels: list of two integers specifying Cellpose channel config.
+    - model_instance: CellposeModel or ONNX model.
+    - model_name: 'cellpose' or 'resunet'.
+    - diameter: estimated object diameter (Cellpose).
     - output_mask_path: path to save output JSON.
     - return_result: if True, also returns the result object.
-    - flow_threshold: optional float, Cellpose flow filtering.
-    - cellprob_threshold: optional float, Cellpose confidence threshold.
-    -visualization: optional bool, whether to visualize the resulting image.
+    - flow_threshold: Cellpose flow filtering.
+    - cellprob_threshold: Cellpose confidence threshold.
+    - tile_images: whether to run inference in tile mode.
+    - tile_size: tuple of tile dimensions.
+    - normalize_images: normalize image input to [0,1].
+    - visualization: whether to show visualization.
 
     Returns:
     - output_mask_path or (output_mask_path, result) if return_result=True
     """
+    start_time = time.time()
     output_mask_path = Path(output_mask_path)
-    basename = os.path.basename(image_path)
+    basename = Path(image_path).name
 
     print(f"[INFO] Starting inference for: {basename}")
-    print(f"       → Diameter: {diameter}")
+    print(f"       → Diameter: {diameter}, Tile: {tile_images}, Normalize: {normalize_images}")
     if flow_threshold is not None:
         print(f"       → Flow threshold: {flow_threshold}")
     if cellprob_threshold is not None:
@@ -46,23 +48,49 @@ def run_inference(image_path, model_instance, model_name='cellpose', diameter=No
 
     original_image = hf.load_image(image_path)
 
-    if preprocess_image:
-        inference_image = hf.preprocess_image_for_inference(original_image, verbose=True)
-    else:
-        inference_image = original_image
-
     if model_name.lower() == 'cellpose':
         print(f"[INFO] Running Cellpose inference...")
-        mask, flows = mf.run_cellpose_inference(
-            model=model_instance,
-            image=inference_image,
-            diameter=diameter,
-            flow_threshold=flow_threshold,
-            cellprob_threshold=cellprob_threshold
-        )
-        print(f"[INFO] Inference complete. Converting mask to JSON...")
-        mask_json = jc.convert_cellpose_mask_to_json(mask)
-        result = mask_json
+        if tile_images:
+            mask = mf.run_tiled_inference(
+                model_name='cellpose',
+                model_instance=model_instance,
+                image=original_image,
+                tile_size=tile_size,
+                overlap=0,
+                normalize=normalize_images,
+                diameter=diameter,
+                flow_threshold=flow_threshold,
+                cellprob_threshold=cellprob_threshold
+            )
+        else:
+            if normalize_images:
+                original_image = hf.normalize_image(original_image)
+            mask, flows = mf.run_cellpose_inference(
+                model=model_instance,
+                image=original_image,
+                diameter=diameter,
+                flow_threshold=flow_threshold,
+                cellprob_threshold=cellprob_threshold
+            )
+        result = jc.convert_cellpose_mask_to_json(mask)
+
+    elif model_name.lower() == 'resunet':
+        print(f"[INFO] Running ResUNet inference...")
+        if tile_images:
+            mask = mf.run_tiled_inference(
+                model_name='resunet',
+                model_instance=model_instance,
+                image=original_image,
+                tile_size=tile_size,
+                overlap=0,
+                normalize=normalize_images
+            )
+        else:
+            if normalize_images:
+                original_image = hf.normalize_image(original_image)
+            mask = mf.run_resunet_inference(model_instance, original_image)
+        result = jc.convert_resunet_mask_to_polygon_json(mask)
+
     else:
         raise ValueError(f"[ERROR] Unsupported model '{model_name}' in run_inference.")
 
@@ -70,7 +98,8 @@ def run_inference(image_path, model_instance, model_name='cellpose', diameter=No
     with open(output_mask_path, 'w') as f:
         json.dump(result, f)
 
-    print(f"[INFO] Saved mask to: {output_mask_path}")
+    print(f"[INFO] Inference complete. Saved mask to: {output_mask_path}")
+    print(f"[INFO] Total inference time: {time.time() - start_time:.2f}s")
 
     if visualization:
         viz.visualize_masks(
@@ -81,29 +110,48 @@ def run_inference(image_path, model_instance, model_name='cellpose', diameter=No
 
     return (output_mask_path, result) if return_result else output_mask_path
 
-def batch_inference(image_inputs, model_name='cellpose', diameter=None, channels=[0, 0], output_dir='outputs',
-                    batch_size=None, gpu=True, model_instance=None, flow_threshold=None, cellprob_threshold=None,
-                    preprocess_image=True, visualization=False, verbose=True):
+def batch_inference(image_inputs, output_dir='outputs',batch_size=None, verbose=True, run_inference_config=None):
     """
-    Runs inference on a list or directory of TIFF images in batches.
+    Runs inference on a list or directory of images using a unified config.
 
     Parameters:
-    - image_inputs: directory path or list of .tif/.tiff image paths.
-    - model_name: backend model name (default 'cellpose').
-    - diameter: estimated object diameter for Cellpose.
-    - channels: Cellpose channel config (currently unused).
-    - output_dir: where to save JSON predictions.
-    - batch_size: how many images to process at a time.
-    - gpu: use GPU if available.
-    - model_instance: a pre-loaded Cellpose model (optional).
-    - flow_threshold: Cellpose flow filtering threshold.
-    - cellprob_threshold: Cellpose segmentation threshold.
-    - preprocess_image: normalize image before inference.
-    - visualization: visualize the prediction output.
-    - verbose: print per-image debug info.
+    ----------
+    image_inputs : str or list
+        Path to a directory containing images, or a list of image file paths.
+        Supports .tif and .tiff files.
 
-    Returns:
-    - List of output JSON paths.
+    output_dir : str
+        Directory where prediction JSONs will be saved.
+
+    batch_size : int or None
+        Number of images to process at a time. If None, processes all at once.
+
+    visualization : bool
+        Whether to generate per-image visualizations during inference.
+
+    verbose : bool
+        Whether to print progress and image-level logs.
+
+    run_inference_config : dict
+        Dictionary of keyword arguments passed to `run_inference()`.
+        Must include at least:
+            - "model_instance": a loaded model (e.g., Cellpose or ONNX model)
+            - "model_name": string identifier ("cellpose" or "resunet")
+        Optional keys that can be included:
+            - "tile_images": bool
+            - "tile_size": (H, W)
+            - "normalize_images": bool
+            - "diameter": float (for Cellpose)
+            - "flow_threshold": float
+            - "cellprob_threshold": float
+            - "return_result": bool
+        Returns:
+        -------
+        list
+            If run_inference_config['return_result'] is True:
+                List of (output_path, result_dict) tuples.
+            Else:
+                List of output file paths (str).
     """
 
     image_paths = hf.resolve_files(image_inputs, valid_exts={'.tif', '.tiff'})
@@ -115,11 +163,13 @@ def batch_inference(image_inputs, model_name='cellpose', diameter=None, channels
     output_dir.mkdir(parents=True, exist_ok=True)
     pred_json_paths = []
 
-    if model_instance is None:
-        if model_name == 'cellpose':
-            model_instance = mf.instantiate_cellpose_model(net="CPnetV2", gpu=gpu)
-        else:
-            raise ValueError(f"[ERROR] Model '{model_name}' is not implemented.")
+    if run_inference_config is None:
+        raise ValueError("Missing run_inference_config.")
+
+    if "model_name" not in run_inference_config or "model_instance" not in run_inference_config:
+        raise ValueError("run_inference_config must include 'model_name' and 'model_instance'.")
+
+    model_name = run_inference_config.get("model_name")
 
     def process_batch(batch_paths):
         batch_pred_paths = []
@@ -130,18 +180,13 @@ def batch_inference(image_inputs, model_name='cellpose', diameter=None, channels
             if verbose:
                 print(f"\n[INFO] Processing: {img_basename}")
 
-            pred_json = run_inference(
+            result = run_inference(
                 image_path=img_path,
-                model_instance=model_instance,
-                model_name=model_name,
-                diameter=diameter,
                 output_mask_path=output_json,
-                flow_threshold=flow_threshold,
-                cellprob_threshold=cellprob_threshold,
-                preprocess_image=preprocess_image,
-                visualization=visualization
+                **run_inference_config
             )
-            batch_pred_paths.append(pred_json)
+
+            batch_pred_paths.append(result)
         return batch_pred_paths
 
     if not batch_size or batch_size >= len(image_paths):
@@ -386,41 +431,9 @@ def batch_run(image_inputs, ground_truth_json_paths=None, prediction_json_paths=
         writer.writerows(summary_rows)
     print(f"\n📄 Summary written to {summary_csv_path}")
 
-def batch_train_main(arguments):
-    """
-    Wrapper function to run batch training using provided arguments dictionary.
-    """
-    print("Running batch_train with the following arguments:")
-    for k, v in arguments.items():
-        print(f"  {k}: {v}")
-
-    batch_train(**arguments)
-
-def batch_run_main(arguments):
-    """
-    Wrapper function to run batch processing using provided arguments dictionary.
-    """
-    print("Running batch_run with the following arguments:")
-    for k, v in arguments.items():
-        print(f"  {k}: {v}")
-
-    batch_run(**arguments)
-
-
 # ============================== MAIN ==============================
 
 if __name__ == "__main__":
-
-    image_paths = [
-        "data/images/Araceli_A1_s1_w1_z0_baf8acb0-02f2-4d95-b194-6eca230e9937.tiff",
-        "data/images/Araceli_A6_s2_w1_z0_1020e47f-73ff-427f-b5aa-44d2915e9068.tiff",
-        "data/images/Araceli_A7_s4_w1_z0_af3998a3-849c-47fe-9274-382f3879f87c.tiff"
-    ]
-
-    ground_truth_json_paths = [
-        "data/annotations/A6_s2.json",
-        "data/annotations/A7_s4.json"
-    ]
 
     batch_train_arguments = {
         "gt_json_folder": "data/annotations/",
@@ -473,8 +486,46 @@ if __name__ == "__main__":
     "headless": False
 }
 
+    # TODO: Make Batch Run work with dict
+    # TODO: Make run inference take a dict
+
+    image_path = "data/images/Araceli_A7_s4_w1_z0_af3998a3-849c-47fe-9274-382f3879f87c.tiff"
+
+    # Run tiled inference
+    run_inference_config_cellpose = {
+        "model_name": "cellpose",
+        "model_instance": mf.instantiate_cellpose_model(net="CPnetV2", gpu=True),
+        "tile_images": True,
+        "tile_size": (512, 512),
+        "normalize_images": True,
+        "diameter": 30,
+        "flow_threshold": 0.4,
+        "cellprob_threshold": 0.0,
+        "visualization": True,
+        "return_result": False
+    }
+
+    # Run tiled inference
+    run_inference_config_resunet = {
+        "model_name": "resunet",
+        "model_instance": mf.instantiate_resunet_model("models/ResNet50_U-Net.onnx", gpu=True),
+        "tile_images": True,
+        "tile_size": (512, 512),
+        "normalize_images": True,
+        "visualization": True,
+        "return_result": False
+    }
+
     print("\n===== Running Batch Inference =====\n")
-    # batch_run_main(batch_run_arguments)
+    for arg_dict in [run_inference_config_cellpose, run_inference_config_resunet]:
+        batch_inference(
+            image_inputs="data/images/",
+            output_dir="outputs/",
+            batch_size=2,
+            run_inference_config=arg_dict
+        )
+
+        # run_inference(image_path, **arg_dict)
 
     print("\n===== Running Batch Training =====\n")
-    batch_train_main(batch_train_arguments)
+    # batch_train(**batch_train_arguments)

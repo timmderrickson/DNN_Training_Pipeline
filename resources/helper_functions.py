@@ -18,21 +18,18 @@ def load_image(image_path):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     return image
 
-def preprocess_image_for_inference(image, verbose=False):
+def normalize_image(image, verbose=False):
     """
-    Preprocesses an input image for inference:
-    - Normalizes based on dtype
-    - Converts to float32
-    - (Optionally extendable for cropping, filtering, etc.)
+     - Normalizes based on dtype
+     - Converts to float32
 
-    Parameters:
-    - image: np.ndarray, expected shape (H, W) or (H, W, C)
-    - verbose: bool, if True, print debug info
+     Parameters:
+     - image: np.ndarray, expected shape (H, W) or (H, W, C)
+     - verbose: bool, if True, print debug info
 
-    Returns:
-    - norm_image: np.ndarray of float32 scaled to [0, 1]
-    """
-
+     Returns:
+     - norm_image: np.ndarray of float32 scaled to [0, 1]
+     """
     if verbose:
         print(f"[PREPROCESS] Original dtype: {image.dtype}, shape: {image.shape}")
 
@@ -62,6 +59,102 @@ def preprocess_image_for_inference(image, verbose=False):
         print(f"[PREPROCESS] Final dtype: {norm_image.dtype}, min: {norm_image.min():.4f}, max: {norm_image.max():.4f}")
 
     return norm_image
+
+def tile_image(image, tile_size=(512, 512), overlap=0):
+    """
+    Tiles an image into patches of fixed size with optional overlap.
+
+    Args:
+        image (np.ndarray): Input image (H, W[, C]).
+        tile_size (tuple): Tile dimensions (height, width).
+        overlap (int): Overlap in pixels between tiles.
+
+    Returns:
+        tiles (list): List of image tiles.
+        coords (list): List of (y, x) top-left coords for each tile.
+        padded_shape (tuple): Final padded image shape.
+    """
+
+    H, W = image.shape[:2]
+    th, tw = tile_size
+
+    # Pad to nearest multiple
+    pad_h = (th - H % th) % th
+    pad_w = (tw - W % tw) % tw
+    padded = np.pad(image, ((0, pad_h), (0, pad_w), (0, 0)) if image.ndim == 3 else ((0, pad_h), (0, pad_w)),
+                    mode='reflect')
+    H_pad, W_pad = padded.shape[:2]
+
+    tiles = []
+    coords = []
+
+    for y in range(0, H_pad - overlap, th - overlap):
+        for x in range(0, W_pad - overlap, tw - overlap):
+            tile = padded[y:y + th, x:x + tw]
+            tiles.append(tile)
+            coords.append((y, x))
+
+    return tiles, coords, padded.shape
+
+def preprocess_image_for_inference(image, normalize=True, tile=False, tile_size=(512, 512), overlap=0, verbose=False):
+    """
+    Preprocesses an input image for tiled or full-image inference.
+
+    Parameters:
+    - image (np.ndarray): Input image (H, W[, C]).
+    - normalize (bool): Whether to normalize pixel values.
+    - tile (bool): Whether to tile the image for inference.
+    - tile_size (tuple): Size of each tile (H, W).
+    - overlap (int): Number of overlapping pixels between tiles.
+    - verbose (bool): If True, print debug info.
+
+    Returns:
+    - If tile=False: np.ndarray, normalized image.
+    - If tile=True: (list of tiles, coords list, padded_shape)
+    """
+
+    if tile:
+        tiles, coords, padded_shape = tile_image(image, tile_size, overlap)
+
+        if normalize:
+            tiles = [normalize_image(t, verbose=verbose) for t in tiles]
+
+        return tiles, coords, padded_shape
+
+    else:
+        if normalize:
+            return normalize_image(image, verbose=verbose)
+        else:
+            return image
+
+
+def stitch_tiles(tiles, coords, full_shape, tile_size=(512, 512)):
+    """
+    Reconstructs a full-size image from tiles and coordinates.
+
+    Args:
+        tiles (list): List of mask tiles (H, W).
+        coords (list): List of (y, x) coords for each tile.
+        full_shape (tuple): Shape of full padded image.
+        tile_size (tuple): Size of each tile (H, W).
+
+    Returns:
+        np.ndarray: Reconstructed full-size mask (unpadded).
+    """
+    import numpy as np
+
+    stitched = np.zeros(full_shape[:2], dtype=tiles[0].dtype)
+    count = np.zeros_like(stitched, dtype=np.uint8)
+
+    th, tw = tile_size
+
+    for tile, (y, x) in zip(tiles, coords):
+        stitched[y:y + th, x:x + tw] += tile
+        count[y:y + th, x:x + tw] += 1
+
+    stitched = np.divide(stitched, count, out=np.zeros_like(stitched, dtype=np.float32), where=count > 0)
+
+    return stitched[:full_shape[0], :full_shape[1]]
 
 def load_json(filepath):
     """Try loading a JSON file and return its data, or None if failed."""

@@ -59,7 +59,7 @@ def load_polygon_mask_for_viz_multiclass(json_data, image_shape=(3000, 3000), mo
 
     return mask
 
-def convert_json_to_polygon_format(conversion_file, class_name, polygon_json):
+def convert_cellpose_json_to_polygon_format(conversion_file, class_name, polygon_json):
 
     new_version = {"points": conversion_file['contours'], "bounding_boxes": conversion_file["bounding_boxes"]}
 
@@ -234,6 +234,71 @@ def convert_cellpose_mask_to_json(instance_mask, polygon_class='0'):
 
     return annotations_by_class
 
+import numpy as np
+import cv2
+
+def convert_resunet_mask_to_polygon_json(mask, confidence=1.0):
+    """
+    Converts a ResUNet-style mask (2D array) into a structured polygon JSON format.
+
+    Args:
+        mask (np.ndarray): 2D array of integer-labeled regions (e.g., 0 = background, 1+ = object instances).
+        confidence (float): Default confidence score for each object.
+
+    Returns:
+        dict: Dictionary mapping class labels to lists of polygon object dicts.
+    """
+    result = {}
+    unique_vals = np.unique(mask)
+    unique_vals = unique_vals[unique_vals > 0]  # skip background
+
+    i = 0  # object ID counter
+
+    for class_val in unique_vals:
+        binary_mask = (mask == class_val).astype(np.uint8)
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        object_list = []
+
+        for contour in contours:
+            if contour.shape[0] < 3:
+                continue  # skip degenerate contours
+
+            # Convert contour points to (x, y)
+            points = contour.squeeze().tolist()
+            if not isinstance(points[0], list):  # fix squeeze() edge case
+                points = [points]
+
+            # Compute centroid
+            M = cv2.moments(contour)
+            cx = int(M["m10"] / M["m00"]) if M["m00"] != 0 else 0
+            cy = int(M["m01"] / M["m00"]) if M["m00"] != 0 else 0
+
+            object_dict = {
+                "id": i,
+                "type": "POLYGON",
+                "x": cx,
+                "y": cy,
+                "width": 0,
+                "height": 0,
+                "radiusX": 0,
+                "radiusY": 0,
+                "points": points,
+                "floatPoints": [float(p[0]) for p in points] + [float(p[1]) for p in points],
+                "active": True,
+                "confidence": confidence,
+                "associatedModelPrefix": None,
+                "classID": int(class_val)
+            }
+
+            object_list.append(object_dict)
+            i += 1
+
+        if object_list:
+            result[str(int(class_val))] = object_list
+
+    return result
+
 def load_polygon_mask_for_cellpose(json_path, image_shape=(3000, 3000), classes_to_include=None, verbose=False):
     """
     Convert polygon annotations to an instance mask where each object has a unique label (value),
@@ -315,14 +380,14 @@ def convert_araceli_json_to_rewire_format(params, group, index_start):
             continue
 
         polygon_json = {}
-        nuclei_polygon_json = convert_json_to_polygon_format(nuc_data, 0, polygon_json)
+        nuclei_polygon_json = convert_cellpose_json_to_polygon_format(nuc_data, 0, polygon_json)
 
         cell_path = os.path.join(group_dir, params["cells_dir"], cell_filename)
         cell_data = load_json(cell_path)
 
         if cell_data:
             print(f"✅ Cell mask loaded: {cell_filename}")
-            final_polygon_json = convert_json_to_polygon_format(cell_data, 1, nuclei_polygon_json)
+            final_polygon_json = convert_cellpose_json_to_polygon_format(cell_data, 1, nuclei_polygon_json)
         else:
             final_polygon_json = nuclei_polygon_json
 
