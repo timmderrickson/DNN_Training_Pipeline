@@ -198,7 +198,13 @@ def batch_inference(image_inputs, output_dir='outputs',batch_size=None, verbose=
             batch = image_paths[batch_idx * batch_size: (batch_idx + 1) * batch_size]
             pred_json_paths.extend(process_batch(batch))
 
-    print(f"\n✅ Batch inference complete. Saved {len(pred_json_paths)} prediction files.")
+    n = len(pred_json_paths)
+    return_result = run_inference_config.get("return_result", False)
+
+    print(f"\n✅ Batch inference complete. Processed {n} image(s).")
+    if not return_result:
+        print(f"    → {n} prediction files saved to: {output_dir}")
+
     return pred_json_paths
 
 
@@ -290,33 +296,76 @@ def batch_train(gt_json_folder, image_folder, output_image_folder, output_mask_f
     print("\n✅ Batch training complete!\n")
 
 def batch_run(image_inputs, ground_truth_json_paths=None, prediction_json_paths=None,
-              model_instance=None, model_name='cellpose', diameter=None, output_dir='data/predictions',
-              batch_size=None, save_visuals=False, pred_class=None, gt_class=None, compare=False,
-              overwrite_inference=False, gpu=True, visualizations=True,
-              flow_threshold=None, cellprob_threshold=None, preprocess_image=True, verbose=True,
+              run_inference_config=None, output_dir='data/predictions', batch_size=None, save_visuals=False,
+              pred_class=None, gt_class=None, compare=False, overwrite_inference=False,
               headless=False, summary_csv_path="batch_results/batch_run_summary.csv"):
     """
     Full batch pipeline: resolves images, runs inference, matches GT if available,
     and performs scoring + visualization (comparison or standalone).
 
-    Accepts either a folder or list for both images and GT JSONs.
+    Parameters:
+    ----------
+    image_inputs : str or list
+        Path to a directory containing images or list of image paths.
+
+    ground_truth_json_paths : str or list
+        Path to ground truth JSONs directory or list of JSON paths.
+
+    prediction_json_paths : list or None
+        If already generated, list of prediction JSONs.
+
+    run_inference_config : dict
+        Configuration dictionary passed to `run_inference()`. Must include:
+            - "model_name": str
+            - "model_instance": object
+        Optional keys include any valid `run_inference()` parameter.
+
+    output_dir : str
+        Where prediction JSONs will be saved.
+
+    batch_size : int or None
+        Number of images to process per batch.
+
+    save_visuals : bool
+        Whether to save batch comparison visualizations.
+
+    pred_class, gt_class : list or None
+        Classes to include in comparison visualizations.
+
+    compare : bool
+        If True, performs GT comparison scoring.
+
+    overwrite_inference : bool
+        If True, re-runs inference even if predictions are provided.
+
+    headless : bool
+        If True, disables visual outputs.
+
+    summary_csv_path : str
+        Path to save the per-image summary CSV.
     """
 
     print("\n========== BATCH RUN SETTINGS ==========")
-    print(f"Model: {model_name}")
-    print(f"Diameter: {diameter}")
+    print(f"Model: {run_inference_config.get('model_name')}")
     print(f"Compare: {compare}")
     print(f"Prediction classes: {pred_class or 'ALL'}")
     print(f"Ground truth classes: {gt_class or 'ALL'}")
     print(f"Save visuals: {save_visuals}")
     print(f"Overwrite inference: {overwrite_inference}")
-    print(f"Visualizations enabled: {visualizations}")
     print(f"Headless mode: {headless}")
     print("=========================================\n")
 
     image_paths = hf.resolve_files(image_inputs, valid_exts={'.tif', '.tiff'})
     if not image_paths:
         raise RuntimeError("No valid image files found.")
+
+    if run_inference_config is None:
+        raise ValueError("Missing run_inference_config.")
+
+    if "model_instance" not in run_inference_config or "model_name" not in run_inference_config:
+        raise ValueError("run_inference_config must include 'model_name' and 'model_instance'.")
+
+    model_name = run_inference_config.get("model_name")
 
     gt_lookup = {}
     if compare:
@@ -331,9 +380,6 @@ def batch_run(image_inputs, ground_truth_json_paths=None, prediction_json_paths=
             key = hf.extract_well_site(Path(f).stem)
             if key:
                 gt_lookup[key.lower()] = f
-
-    if model_instance is None:
-        raise ValueError("You must provide a pre-instantiated model_instance (e.g. from instantiate_cellpose_model()).")
 
     run_inference_flag = False
     if overwrite_inference:
@@ -350,17 +396,9 @@ def batch_run(image_inputs, ground_truth_json_paths=None, prediction_json_paths=
     if run_inference_flag:
         prediction_json_paths = batch_inference(
             image_inputs=image_paths,
-            model_name=model_name,
-            diameter=diameter,
             output_dir=output_dir,
             batch_size=batch_size,
-            gpu=gpu,
-            model_instance=model_instance,
-            flow_threshold=flow_threshold,
-            cellprob_threshold=cellprob_threshold,
-            preprocess_image=preprocess_image,
-            visualization=visualizations and not headless,
-            verbose=verbose
+            run_inference_config=run_inference_config
         )
 
     image_json_pairs = []
@@ -379,7 +417,7 @@ def batch_run(image_inputs, ground_truth_json_paths=None, prediction_json_paths=
                     except Exception as e:
                         print(f"[WARN] Failed to load GT for {Path(img_path).name}: {e}")
                         gt_json = None
-                elif verbose:
+                else:
                     print(f"[WARN] No ground truth JSON found for {Path(img_path).name} → skipping comparison.")
 
         image_json_pairs.append((img_path, pred_json, gt_json))
@@ -387,7 +425,7 @@ def batch_run(image_inputs, ground_truth_json_paths=None, prediction_json_paths=
             "image": Path(img_path).name,
             "has_gt": gt_json is not None,
             "used_for_comparison": compare and gt_json is not None,
-            "visualized": False  # will update later
+            "visualized": False
         })
 
     comparison_pairs = [(img, pred, gt) for img, pred, gt in image_json_pairs if gt is not None]
@@ -412,7 +450,7 @@ def batch_run(image_inputs, ground_truth_json_paths=None, prediction_json_paths=
     elif compare:
         print("[WARN] No ground truth available — skipping comparison scoring.")
 
-    if visualizations and not headless:
+    if run_inference_config.get("visualization", True) and not headless:
         print("[INFO] Visualizing non-comparison images...")
         for i, (img_path, pred_json, gt_json) in enumerate(image_json_pairs):
             if gt_json is None:
@@ -465,26 +503,32 @@ if __name__ == "__main__":
     }
 
     batch_run_arguments = {
-    "image_inputs": "data/images/",  # directory of .tif images
-    "ground_truth_json_paths": "data/annotations/",  # directory of .json files
-    "model_instance": mf.instantiate_cellpose_model(net="CPnet", gpu=True),
-    "model_name": "cellpose",
-    "diameter": 30,
-    "output_dir": "data/predictions/",
-    "batch_size": 2,
-    "save_visuals": True,
-    "pred_class": ['0', '1'],
-    "gt_class": ['0', '1'],
-    "compare": True,
-    "overwrite_inference": True,
-    "gpu": True,
-    "visualizations": True,
-    "flow_threshold": 0.4,
-    "cellprob_threshold": 0.0,
-    "preprocess_image": True,
-    "verbose": True,
-    "headless": False
-}
+        "image_inputs": "data/images/",
+        "ground_truth_json_paths": "data/annotations/",
+        "output_dir": "data/predictions/",
+        "batch_size": 2,
+        "save_visuals": True,
+        "pred_class": ['0', '1'],
+        "gt_class": ['0', '1'],
+        "compare": True,
+        "overwrite_inference": True,
+        "headless": False,
+        "summary_csv_path": "batch_results/batch_run_summary.csv",
+
+        # This is the new unified inference config
+        "run_inference_config": {
+            "model_instance": mf.instantiate_cellpose_model(net="CPnet", gpu=True),
+            "model_name": "cellpose",
+            "tile_images": True,
+            "tile_size": (512, 512),
+            "normalize_images": True,
+            "diameter": 30,
+            "flow_threshold": 0.4,
+            "cellprob_threshold": 0.0,
+            "visualization": True,
+            "return_result": False
+        }
+    }
 
     # TODO: Make Batch Run work with dict
     # TODO: Make run inference take a dict
@@ -517,15 +561,16 @@ if __name__ == "__main__":
     }
 
     print("\n===== Running Batch Inference =====\n")
-    for arg_dict in [run_inference_config_cellpose, run_inference_config_resunet]:
-        batch_inference(
-            image_inputs="data/images/",
-            output_dir="outputs/",
-            batch_size=2,
-            run_inference_config=arg_dict
-        )
-
-        # run_inference(image_path, **arg_dict)
+    batch_run(**batch_run_arguments)
+    # for arg_dict in [run_inference_config_cellpose, run_inference_config_resunet]:
+    #     batch_inference(
+    #         image_inputs="data/images/",
+    #         output_dir="outputs/",
+    #         batch_size=2,
+    #         run_inference_config=arg_dict
+    #     )
+    #
+    #     run_inference(image_path, **arg_dict)
 
     print("\n===== Running Batch Training =====\n")
     # batch_train(**batch_train_arguments)
