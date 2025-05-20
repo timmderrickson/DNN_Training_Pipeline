@@ -1,38 +1,41 @@
 # 🧠 Deep Learning Training Pipeline
 
-This project provides a modular and extensible framework for training, evaluating, and visualizing segmentation models for microscopy images using [Cellpose](https://github.com/MouseLand/cellpose), ONNX-based ResUNet, and related tools.
-
-## 🚀 Features
-
-* **Batch inference** on large microscopy datasets with support for ground truth matching, scoring, and visualization.
-* **Tiled inference support** for both Cellpose and ONNX models to handle large images efficiently.
-* **Flexible training pipeline** with automatic data preparation, augmentation, splitting, training, and metric logging.
-* **Rich visualizations**: overlay outlines, masks, comparison plots, and per-class analysis.
-* **Metric logging** and batch-level comparison (IoU, Dice, etc.).
-* **Custom configuration** for classes, training augmentation, and model checkpointing.
+A modular and extensible pipeline for training, evaluating, and visualizing segmentation models on microscopy images. Built around Cellpose, ResUNet (ONNX), and generative augmentation using GANs/VAEs.
 
 ---
 
-## 📦 Directory Structure (Key Parts)
+## 🚀 Features
 
-```
+- 🔄 **Batch Inference** with support for tiling, large image handling, and visual ground truth comparison
+- 📐 **Tiled Prediction** for both Cellpose and ONNX-based models
+- 🧪 **Flexible Training** pipeline: data prep, augmentation, splitting, training, logging
+- 🎨 **Rich Visualizations**: overlay masks, outlines, prediction vs GT analysis
+- 📊 **Metric Logging**: IoU, Dice, batch-level exports
+- 🧰 **Custom Configs**: model selection, augmentation, checkpointing
+- 🧬 **Generative Modules**: supports VAE- and GAN-based synthetic data generation
+
+---
+
+## 📁 Project Structure
+
+```bash
 DNN_Training_Pipeline/
-├── main.py                      # Entry point for training and batch run
-├── resources/                   # Utilities and core logic
-│   ├── helper_functions.py      # File I/O, tiling, normalization, resolution helpers
-│   ├── model_functions.py       # Cellpose and ONNX model loading/inference
-│   ├── json_conversion_tools.py # JSON ↔ mask conversion
-│   ├── polygon_json_visualizations.py  # Overlay, outlines, GT comparison
-│   └── scoring_functions.py     # Metric calculations and batch-level exports
-│   └── README.md                # Docs for this folder
+├── main.py                      # Entry point for training and batch inference
+├── batch_results/               # Output directory for predictions
+├── data/
+│   ├── images/                  # Raw input TIFF images
+│   ├── annotations/            # Ground truth JSONs
+│   └── predictions/            # Inference predictions
+├── models/
+│   ├── trained_models/         # Model checkpoints (ResUNet, Cellpose)
+│   └── trained_gan/            # GAN-generated models/data
+├── outputs/                    # Visualization results and metric exports
+├── resources/                  # Core utilities
 ├── training/
-│   ├── training_pipeline.py     # Data prep, augmentation, training logic
-│   └── README.md                # Docs for training module
-├── models/                      # Saved models and checkpoints
-├── data/                        # Input images and annotation JSONs
-├── outputs/                     # Predictions, visualizations, and metrics
-├── requirements.gpu.txt         # Required packages (GPU-focused)
-└── README.md                    # You are here
+│   └── training_data/          # Prepared training & validation sets
+├── testing/                    # Test datasets and validation splits
+├── requirements.gpu.txt        # Package dependencies (GPU-enabled)
+└── README.md                   # You are here
 ```
 
 ---
@@ -43,7 +46,7 @@ DNN_Training_Pipeline/
 
 ```python
 from main import batch_run
-from models import model_functions as mf
+from resources import model_functions as mf
 
 model = mf.instantiate_cellpose_model(net="CPnetV2", gpu=True)
 
@@ -60,11 +63,12 @@ batch_run(
 )
 ```
 
-You can also use tiling with **ResUNet** by setting `model_name="resunet"` and loading the ONNX model with:
-
+✅ For ResUNet (ONNX):
 ```python
 model = mf.instantiate_resunet_model("models/ResNet50_U-Net.onnx", gpu=True)
 ```
+
+---
 
 ### 🎓 Training
 
@@ -74,13 +78,16 @@ from main import batch_train
 batch_train(
     gt_json_folder="data/annotations/",
     image_folder="data/images/",
-    output_image_folder="training/prepared_images/",
-    output_mask_folder="training/prepared_masks/",
+    output_image_folder="training/training_data/prepared_images/",
+    output_mask_folder="training/training_data/prepared_masks/",
     image_shape=(3000, 3000),
-    augmentation_config={"horizontal_flip": 0.5, "brightness_range": (0.9, 1.1)},
+    augmentation_config={
+        "horizontal_flip": 0.5,
+        "brightness_range": (0.9, 1.1)
+    },
     num_augments=5,
-    split_dir="training/split/",
-    save_path="training/trained_model/",
+    split_dir="training/training_data/augmented_data_split/",
+    save_path="models/trained_models/",
     n_epochs=100,
     batch_size=8,
     gpu=True
@@ -89,9 +96,48 @@ batch_train(
 
 ---
 
-## 📚 How To Contribute
+## 🧬 Generative Augmentation
 
-* Add clear docstrings to all new functions.
-* Group utility functions in `resources/`.
-* Follow the naming patterns for ground truth: `Plate_Site.json` ⇄ `Araceli_Plate_Site_*.tiff`
-* Run and log training/inference through `main.py` whenever possible.
+Supports:
+- Variational Autoencoders (VAEs) with mask-guided reconstruction
+- GANs for synthetic image/mask pair generation
+- Custom modules in `resources/generative_utils/` (if applicable)
+
+---
+
+## 📚 Contribution Guide
+
+- Write clear docstrings and comments
+- Use consistent naming:  
+  `Plate_Site.json ⇄ Araceli_Plate_Site_*.tiff`
+- Group helper functions in `resources/`
+- Run training/inference through `main.py`
+- Validate with both Cellpose and ResUNet pipelines
+
+---
+
+## 🛠 Dependencies
+
+```bash
+conda create -n dnnpipe python=3.10
+pip install -r requirements.gpu.txt
+```
+
+🧪 Includes:
+- Cellpose >= 4.0
+- OpenCV, Torch, ONNXRuntime
+- Albumentations, Pandas, TIFffile, Matplotlib
+
+---
+
+## 📷 Sample Output
+
+> Add screenshots of overlay masks, ground truth comparisons, and metric visualizations here for visual appeal.
+
+---
+
+## 🧾 License
+
+For research use only. Contact for commercial licensing.
+
+---
